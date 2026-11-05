@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+
+.local/
+__pycache__/
+*.pyc
+venv/
+.venv/
+type_channels.json
+allowed_roles.json
+suspended.json
+only_ping.json
+rate_limit.txt
