@@ -14,26 +14,38 @@ GRIND_SUPPORT_SERVER_IDS = frozenset({
     1429413395769065614,
 })
 
+_poketwo_permission_cache = {}
+_poketwo_permission_lock = asyncio.Lock()
+
 
 async def set_poketwo_send_permission(guild, channel, allowed: bool | None):
     if guild is None or guild.id not in GRIND_SUPPORT_SERVER_IDS:
         return False
-
-    poketwo = guild.get_member(POKETWO_BOT_ID)
-    if poketwo is None:
-        poketwo = await guild.fetch_member(POKETWO_BOT_ID)
 
     if isinstance(channel, discord.Thread):
         channel = channel.parent
     if channel is None:
         return False
 
-    await channel.set_permissions(
-        poketwo,
-        send_messages=allowed,
-        reason="Grind support channel control",
-    )
-    return True
+    cache_key = (guild.id, channel.id)
+    async with _poketwo_permission_lock:
+        if (
+            cache_key in _poketwo_permission_cache
+            and _poketwo_permission_cache[cache_key] == allowed
+        ):
+            return False
+
+        poketwo = guild.get_member(POKETWO_BOT_ID)
+        if poketwo is None:
+            poketwo = await guild.fetch_member(POKETWO_BOT_ID)
+
+        await channel.set_permissions(
+            poketwo,
+            send_messages=allowed,
+            reason="Grind support channel control",
+        )
+        _poketwo_permission_cache[cache_key] = allowed
+        return True
 
 
 def is_only_ping_enabled() -> bool:
@@ -271,11 +283,8 @@ async def ensure_ping_tables(db_instance):
 
 
 async def get_server_naming_enabled(server_id: int, db_instance) -> bool:
-    value = await db_instance.fetchval(
-        "SELECT naming FROM server_settings WHERE serverid = $1",
-        server_id,
-    )
-    return True if value is None else bool(value)
+    naming_enabled, _ = await get_server_spawn_settings(server_id, db_instance)
+    return naming_enabled
 
 
 async def get_server_shiny_hunt_priority(server_id: int, db_instance) -> bool:
@@ -286,21 +295,41 @@ async def get_server_shiny_hunt_priority(server_id: int, db_instance) -> bool:
     return bool(value) if value is not None else False
 
 
+_server_spawn_settings_cache = {}
+_server_spawn_settings_lock = asyncio.Lock()
+
+
 async def get_server_spawn_settings(
     server_id: int,
     db_instance,
 ) -> tuple[bool, bool]:
-    row = await db_instance.fetchrow(
-        """
-        SELECT naming, shiny_hunt_prio
-        FROM server_settings
-        WHERE serverid = $1
-        """,
-        server_id,
-    )
-    if row is None:
-        return True, False
-    return bool(row["naming"]), bool(row["shiny_hunt_prio"])
+    cached = _server_spawn_settings_cache.get(server_id)
+    if cached is not None:
+        return cached
+
+    async with _server_spawn_settings_lock:
+        cached = _server_spawn_settings_cache.get(server_id)
+        if cached is not None:
+            return cached
+
+        row = await db_instance.fetchrow(
+            """
+            SELECT naming, shiny_hunt_prio
+            FROM server_settings
+            WHERE serverid = $1
+            """,
+            server_id,
+        )
+        if row is None:
+            settings = (True, False)
+        else:
+            settings = (bool(row["naming"]), bool(row["shiny_hunt_prio"]))
+        _server_spawn_settings_cache[server_id] = settings
+        return settings
+
+
+def invalidate_server_spawn_settings_cache(server_id: int) -> None:
+    _server_spawn_settings_cache.pop(server_id, None)
 
 
 # Load forms.json and prepare mapping
